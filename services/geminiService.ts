@@ -2,11 +2,16 @@
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { Project, Chapter, Character, Relationship } from "../types";
 
-// Hàm kiểm tra API Key để debug nhanh
+/**
+ * Hàm lấy API Key từ môi trường.
+ * Vite sẽ thay thế process.env.API_KEY bằng giá trị thực tế lúc Build.
+ */
 const getApiKey = () => {
   const key = process.env.API_KEY;
-  if (!key || key === 'undefined' || key === '') {
-    throw new Error("API_KEY_MISSING: Chưa tìm thấy API Key trong môi trường hệ thống. Vui lòng kiểm tra lại cấu hình biến môi trường trên nền tảng deploy.");
+  
+  // Kiểm tra nếu key bị rỗng hoặc là chuỗi "undefined" do lỗi build
+  if (!key || key === "" || key === "undefined") {
+    throw new Error("CHƯA CẤU HÌNH API KEY: Vui lòng vào cài đặt Project trên nền tảng Deploy (Vercel/Netlify), thêm biến môi trường tên là API_KEY với giá trị là mã của bạn, sau đó 'Redeploy' lại.");
   }
   return key;
 };
@@ -17,25 +22,25 @@ const getSystemContext = (project: Project) => {
     : "";
     
   return `
-    BỐI CẢNH THẾ GIỚI (WORLD BIBLE):
-    ${project.worldBible || "Chưa có thiết lập bối cảnh cụ thể."}
+    DỰ ÁN: ${project.title}
+    BỐI CẢNH THẾ GIỚI:
+    ${project.worldBible || "Chưa có thiết lập bối cảnh."}
 
     ${charContext}
 
-    THỂ LOẠI: ${project.genre}. GIỌNG VĂN: ${project.tone}.
+    THỂ LOẠI: ${project.genre}. TONE GIỌNG: ${project.tone}.
   `;
 };
 
 export const generateCoAuthorResponse = async (project: Project, userMessage: string) => {
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    const model = "gemini-3-pro-preview"; // Nâng cấp lên Pro cho tác vụ viết lách phức tạp
+    const model = "gemini-3-pro-preview";
     
-    const systemInstruction = `Bạn là Nhà văn Đồng tác giả chuyên nghiệp cho dự án "${project.title}". 
+    const systemInstruction = `Bạn là một Nhà văn chuyên nghiệp, đồng tác giả của dự án này. 
     ${getSystemContext(project)}
-    Hãy hỗ trợ tác giả phát triển ý tưởng, xây dựng tình tiết và tra cứu thông tin thực tế khi cần thiết.`;
+    Hãy phản hồi bằng tiếng Việt, hỗ trợ tác giả xây dựng tình tiết hấp dẫn.`;
 
-    // Đảm bảo chat history luôn xen kẽ user-model và kết thúc bằng user
     const formattedHistory = project.chatHistory.map(m => ({
       role: m.role,
       parts: [{ text: m.text }]
@@ -57,13 +62,13 @@ export const generateCoAuthorResponse = async (project: Project, userMessage: st
     })).filter((item: any) => item.uri);
 
     return { 
-      text: response.text || "Tôi chưa tìm được ý tưởng phù hợp, hãy thử lại nhé.",
+      text: response.text || "Tôi đang suy nghĩ, bạn hãy thử lại nhé.",
       groundingUrls: urls
     };
   } catch (error: any) {
     console.error("AI Error:", error);
     return { 
-      text: `Lỗi kết nối AI: ${error.message.includes('API_KEY_MISSING') ? error.message : "Đã có lỗi xảy ra khi gọi Gemini API. Có thể do quota hoặc model chưa khả dụng tại vùng này."}` 
+      text: `⚠️ ${error.message}` 
     };
   }
 };
@@ -73,9 +78,9 @@ export const analyzeRelationships = async (project: Project): Promise<Relationsh
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     if (project.characters.length < 2) return [];
 
-    const prompt = `Phân tích mối quan hệ giữa các nhân vật sau dựa trên bối cảnh:
+    const prompt = `Dựa vào bối cảnh, hãy phân tích mối quan hệ giữa các nhân vật:
     ${project.characters.map(c => `${c.name} (${c.role}): ${c.personality}`).join(", ")}
-    Trả về JSON array các quan hệ.`;
+    Trả về kết quả dưới dạng JSON array các object {fromId, toId, type, description}.`;
 
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
@@ -107,24 +112,24 @@ export const analyzeRelationships = async (project: Project): Promise<Relationsh
 export const generateStoryDraft = async (project: Project, chapter: Chapter, instruction: string) => {
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    const systemInstruction = `Bạn là nhà văn đang viết "${project.title}". ${getSystemContext(project)}`;
+    const systemInstruction = `Bạn là nhà văn chính. ${getSystemContext(project)}`;
 
     const response = await ai.models.generateContent({
       model: "gemini-3-pro-preview",
-      contents: `Nhiệm vụ: ${instruction}\n\nNội dung hiện tại:\n${chapter.content}`,
+      contents: `Nhiệm vụ: ${instruction}\n\nNội dung chương hiện tại:\n${chapter.content}`,
       config: { systemInstruction }
     });
     return response.text;
-  } catch (error) {
+  } catch (error: any) {
     console.error("Draft error:", error);
-    return "";
+    return `Lỗi khi viết: ${error.message}`;
   }
 };
 
 export const generateCharacterPortrait = async (character: Character) => {
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    const prompt = `Portrait of ${character.name}, ${character.appearance}. Concept art style, high quality. No text.`;
+    const prompt = `Professional character portrait of ${character.name}, ${character.appearance}. Cinematic lighting, detailed digital art style.`;
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
       contents: { parts: [{ text: prompt }] }
