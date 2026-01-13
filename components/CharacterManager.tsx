@@ -51,7 +51,8 @@ const CharacterManager: React.FC<CharacterManagerProps> = ({ project, onUpdate }
       return;
     }
     setIsGeneratingImg(true);
-    const imgBase64 = await generateCharacterPortrait(selectedCharacter, project.title);
+    // Fix: Remove extra argument project.title as generateCharacterPortrait only takes one argument
+    const imgBase64 = await generateCharacterPortrait(selectedCharacter);
     if (imgBase64) {
       handleUpdateCharacter({ ...selectedCharacter, imageUrl: imgBase64 });
     }

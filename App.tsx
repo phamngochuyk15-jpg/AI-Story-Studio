@@ -44,6 +44,8 @@ const App: React.FC = () => {
       worldBible: '',
       tone: 'Tự nhiên',
       characters: [],
+      // Fix: Add missing relationships property required by Project type
+      relationships: [],
       chapters: [],
       chatHistory: [],
       lastUpdated: Date.now()

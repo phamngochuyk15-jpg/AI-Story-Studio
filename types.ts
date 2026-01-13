@@ -15,7 +15,14 @@ export interface Character {
   backstory: string;
   appearance: string;
   notes: string;
-  imageUrl?: string; // Lưu URL base64 của ảnh nhân vật
+  imageUrl?: string;
+}
+
+export interface Relationship {
+  fromId: string;
+  toId: string;
+  type: string;
+  description: string;
 }
 
 export interface Chapter {
@@ -29,6 +36,7 @@ export interface Chapter {
 export interface ChatMessage {
   role: 'user' | 'model';
   text: string;
+  groundingUrls?: { title: string; uri: string }[];
 }
 
 export interface Project {
@@ -36,9 +44,10 @@ export interface Project {
   title: string;
   type: ProjectType;
   genre: string;
-  worldBible: string; // Lưu thiết lập thế giới/bible
+  worldBible: string;
   tone: string;
   characters: Character[];
+  relationships: Relationship[];
   chapters: Chapter[];
   chatHistory: ChatMessage[];
   lastUpdated: number;
