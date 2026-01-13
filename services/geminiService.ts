@@ -5,7 +5,7 @@ import { Project, Chapter, Character, Relationship } from "../types";
 const getApiKey = () => {
   const key = process.env.API_KEY;
   if (!key || key === "" || key === "undefined") {
-    throw new Error("CHƯA CẤU HÌNH API KEY.");
+    throw new Error("API_KEY_MISSING");
   }
   return key;
 };
@@ -13,31 +13,25 @@ const getApiKey = () => {
 const handleAiError = (error: any) => {
   console.error("AI Error:", error);
   const msg = error.message || "";
-  if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED")) {
-    return "429_ERROR"; // Trả về mã lỗi đặc biệt để UI xử lý
+  if (msg.includes("429") || msg.includes("60s") || msg.includes("quota") || msg.includes("exhausted")) {
+    return "429_ERROR";
   }
   return `⚠️ LỖI: ${msg}`;
 };
 
-/**
- * Thu gọn bối cảnh ở mức tối giản (dưới 500 ký tự) để tiết kiệm Token
- */
-const getUltraCondensedContext = (project: Project) => {
-  return `Truyện: ${project.title}. Thể loại: ${project.genre}. Bối cảnh: ${project.worldBible.slice(0, 300)}...`;
+// Cực kỳ ngắn gọn để tiết kiệm token đầu vào
+const getMinContext = (project: Project) => {
+  return `Truyện: ${project.title}. Thể loại: ${project.genre}.`;
 };
 
-/**
- * Trả về phản hồi từ đồng tác giả AI
- * Fix: Thêm kiểu dữ liệu trả về tường minh bao gồm groundingUrls để sửa lỗi TS trong CoAuthorChat.tsx
- */
 export const generateCoAuthorResponse = async (project: Project, userMessage: string): Promise<{ text: string; groundingUrls?: { title: string; uri: string }[] }> => {
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    // Chuyển sang Flash Lite - Model "trâu" nhất về hạn mức Free
-    const model = "gemini-flash-lite-latest";
+    // Dùng model 2.0 Lite mới nhất để có quota tốt nhất
+    const model = "gemini-2.0-flash-lite-preview-02-05";
     
-    // Chỉ lấy 4 tin nhắn gần nhất (siêu tiết kiệm)
-    const shortHistory = project.chatHistory.slice(-4).map(m => ({
+    // Chỉ lấy 2 tin nhắn gần nhất để siêu tiết kiệm
+    const shortHistory = project.chatHistory.slice(-2).map(m => ({
       role: m.role,
       parts: [{ text: m.text }]
     }));
@@ -46,22 +40,17 @@ export const generateCoAuthorResponse = async (project: Project, userMessage: st
       model,
       contents: [...shortHistory, { role: 'user', parts: [{ text: userMessage }] }],
       config: { 
-        systemInstruction: `Bạn là đồng tác giả. Trả lời cực ngắn gọn bằng tiếng Việt. Bối cảnh: ${getUltraCondensedContext(project)}`,
-        // KHÔNG dùng tools (Google Search) để tránh bị khóa quota nhanh
+        systemInstruction: `Bạn là đồng tác giả. Trả lời ngắn gọn bằng tiếng Việt. ${getMinContext(project)}`,
+        maxOutputTokens: 400, // Giới hạn độ dài phản hồi để tiết kiệm TPM
+        temperature: 0.7
       }
     });
 
-    // Trích xuất grounding URLs nếu có (mặc dù hiện tại tools đang tắt)
-    const groundingUrls = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
-      title: chunk.web?.title || chunk.maps?.title || "Nguồn",
-      uri: chunk.web?.uri || chunk.maps?.uri || ""
-    })).filter((item: any) => item.uri);
-
     return { 
       text: response.text || "AI không phản hồi.",
-      groundingUrls: groundingUrls && groundingUrls.length > 0 ? groundingUrls : undefined
     };
   } catch (error: any) {
+    if (error.message === "API_KEY_MISSING") return { text: "⚠️ LỖI: Chưa cấu hình API_KEY trên Vercel." };
     return { text: handleAiError(error) };
   }
 };
@@ -70,10 +59,11 @@ export const generateStoryDraft = async (project: Project, chapter: Chapter, ins
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
-      model: "gemini-flash-lite-latest",
-      contents: `Viết tiếp chương "${chapter.title}". Yêu cầu: ${instruction}\n\nĐoạn cuối: ${chapter.content.slice(-800)}`,
+      model: "gemini-2.0-flash-lite-preview-02-05",
+      contents: `Viết tiếp chương "${chapter.title}". Yêu cầu: ${instruction}\n\nĐoạn cuối: ${chapter.content.slice(-500)}`,
       config: { 
-        systemInstruction: getUltraCondensedContext(project)
+        systemInstruction: `Viết truyện tiếng Việt. ${getMinContext(project)}`,
+        maxOutputTokens: 800 // Giới hạn vừa phải cho viết chương
       }
     });
     return response.text;
@@ -87,8 +77,8 @@ export const analyzeRelationships = async (project: Project): Promise<Relationsh
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
-      model: "gemini-flash-lite-latest",
-      contents: `JSON quan hệ: ${project.characters.map(c => c.name).join(", ")}`,
+      model: "gemini-2.0-flash-lite-preview-02-05",
+      contents: `Trả về JSON quan hệ nhân vật: ${project.characters.map(c => c.name).join(", ")}`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -103,7 +93,8 @@ export const analyzeRelationships = async (project: Project): Promise<Relationsh
             },
             required: ["fromId", "toId", "type"]
           }
-        }
+        },
+        maxOutputTokens: 500
       }
     });
     return JSON.parse(response.text || "[]");
@@ -117,7 +108,7 @@ export const generateCharacterPortrait = async (character: Character) => {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
-      contents: { parts: [{ text: `Simple anime character, ${character.appearance}` }] }
+      contents: { parts: [{ text: `Anime style: ${character.appearance}` }] }
     });
     for (const part of response.candidates[0].content.parts) {
       if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
@@ -133,7 +124,7 @@ export const generateSpeech = async (text: string) => {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text: text.slice(0, 500) }] }],
+      contents: [{ parts: [{ text: text.slice(0, 300) }] }],
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
