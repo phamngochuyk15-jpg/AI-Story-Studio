@@ -5,87 +5,90 @@ import { Project, Chapter, Character, Relationship } from "../types";
 const getApiKey = () => {
   const key = process.env.API_KEY;
   if (!key || key === "" || key === "undefined") {
-    throw new Error("CHƯA CẤU HÌNH API KEY: Vui lòng kiểm tra biến môi trường API_KEY trong cài đặt Vercel.");
+    throw new Error("CHƯA CẤU HÌNH API KEY: Kiểm tra biến API_KEY trên Vercel.");
   }
   return key;
 };
 
-/**
- * Xử lý lỗi từ Google API để hiển thị thông báo thân thiện
- */
 const handleAiError = (error: any) => {
-  console.error("AI Error Details:", error);
+  console.error("AI Error:", error);
   const msg = error.message || "";
-  
   if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED")) {
-    return "⚠️ HẾT HẠN MỨC SỬ DỤNG: Bạn đã gửi quá nhiều yêu cầu hoặc hết giới hạn miễn phí của Google trong hôm nay. Hãy đợi 1-2 phút rồi thử lại hoặc nâng cấp lên gói trả phí tại Google AI Studio.";
+    return "⚠️ HỆ THỐNG ĐANG QUÁ TẢI (429): Bạn đã dùng hết hạn mức miễn phí trong phút này. Hãy nghỉ tay khoảng 30-60 giây rồi nhấn gửi lại nhé!";
   }
-  if (msg.includes("500") || msg.includes("Internal Server Error")) {
-    return "⚠️ LỖI HỆ THỐNG GOOGLE: Máy chủ AI đang gặp sự cố tạm thời. Vui lòng thử lại sau vài giây.";
-  }
-  return `⚠️ LỖI KẾT NỐI: ${msg}`;
+  return `⚠️ LỖI: ${msg}`;
 };
 
-const getSystemContext = (project: Project) => {
-  const charContext = project.characters.length > 0 
-    ? `DANH SÁCH NHÂN VẬT:\n${project.characters.map(c => `- ${c.name} (${c.role}): ${c.personality}`).join('\n')}`
-    : "";
-    
-  return `
-    DỰ ÁN: ${project.title}
-    BỐI CẢNH: ${project.worldBible || "Tự do"}
-    ${charContext}
-    THỂ LOẠI: ${project.genre}. TONE: ${project.tone}.
-  `;
+/**
+ * Rút gọn bối cảnh để gửi đi (chỉ gửi những thứ quan trọng nhất)
+ */
+const getCondensedContext = (project: Project) => {
+  const charNames = project.characters.map(c => c.name).join(", ");
+  return `Tên truyện: ${project.title}. Thể loại: ${project.genre}. Nhân vật: ${charNames}. Bối cảnh: ${project.worldBible.slice(0, 1000)}...`;
 };
 
+// Cập nhật hàm trả về đối tượng có groundingUrls để khớp với kiểu dữ liệu ChatMessage trong UI
 export const generateCoAuthorResponse = async (project: Project, userMessage: string) => {
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    // Chuyển sang model Flash để có hạn mức sử dụng (RPM/TPM) cao hơn Pro
     const model = "gemini-3-flash-preview";
     
-    const systemInstruction = `Bạn là đồng tác giả của dự án này. Hãy phản hồi bằng tiếng Việt. ${getSystemContext(project)}`;
-
-    const formattedHistory = project.chatHistory.map(m => ({
+    // Chỉ lấy 8 tin nhắn gần nhất để tiết kiệm token
+    const shortHistory = project.chatHistory.slice(-8).map(m => ({
       role: m.role,
       parts: [{ text: m.text }]
     }));
 
     const response = await ai.models.generateContent({
       model,
-      contents: [...formattedHistory, { role: 'user', parts: [{ text: userMessage }] }],
+      contents: [...shortHistory, { role: 'user', parts: [{ text: userMessage }] }],
       config: { 
-        systemInstruction,
-        tools: [{ googleSearch: {} }] 
+        systemInstruction: `Bạn là đồng tác giả truyện. Hãy trả lời ngắn gọn, súc tích bằng tiếng Việt. Bối cảnh: ${getCondensedContext(project)}`,
+        // Kích hoạt Google Search để có thể cung cấp nguồn tham khảo thực tế
+        tools: [{ googleSearch: {} }]
       }
     });
 
-    const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-    const urls = groundingChunks?.map((chunk: any) => ({
-      title: chunk.web?.title || "Nguồn tham khảo",
-      uri: chunk.web?.uri
-    })).filter((item: any) => item.uri);
+    // Trích xuất các liên kết từ dữ liệu grounding của Gemini
+    const groundingUrls = response.candidates?.[0]?.groundingMetadata?.groundingChunks
+      ?.filter((chunk: any) => chunk.web)
+      .map((chunk: any) => ({
+        title: chunk.web.title || "Nguồn tham khảo",
+        uri: chunk.web.uri || ""
+      }))
+      .filter((u: any) => u.uri !== "");
 
     return { 
-      text: response.text || "AI không trả về nội dung.",
-      groundingUrls: urls
+      text: response.text || "AI không phản hồi.",
+      groundingUrls: groundingUrls && groundingUrls.length > 0 ? groundingUrls : undefined
     };
   } catch (error: any) {
     return { text: handleAiError(error) };
   }
 };
 
+export const generateStoryDraft = async (project: Project, chapter: Chapter, instruction: string) => {
+  try {
+    const ai = new GoogleGenAI({ apiKey: getApiKey() });
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: `Viết tiếp chương "${chapter.title}". Yêu cầu: ${instruction}\n\nNội dung trước đó: ${chapter.content.slice(-2000)}`,
+      config: { 
+        systemInstruction: getCondensedContext(project)
+      }
+    });
+    return response.text;
+  } catch (error: any) {
+    return handleAiError(error);
+  }
+};
+
 export const analyzeRelationships = async (project: Project): Promise<Relationship[]> => {
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    if (project.characters.length < 2) return [];
-
-    const prompt = `Phân tích quan hệ nhân vật: ${project.characters.map(c => c.name).join(", ")}. Trả về JSON array.`;
-
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: prompt,
+      contents: `Phân tích quan hệ giữa: ${project.characters.map(c => c.name).join(", ")} dựa trên bối cảnh: ${project.worldBible}`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -109,26 +112,12 @@ export const analyzeRelationships = async (project: Project): Promise<Relationsh
   }
 };
 
-export const generateStoryDraft = async (project: Project, chapter: Chapter, instruction: string) => {
-  try {
-    const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Viết tiếp chương này: ${chapter.title}. Yêu cầu: ${instruction}\n\nNội dung cũ: ${chapter.content}`,
-      config: { systemInstruction: getSystemContext(project) }
-    });
-    return response.text;
-  } catch (error: any) {
-    return handleAiError(error);
-  }
-};
-
 export const generateCharacterPortrait = async (character: Character) => {
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
-      contents: { parts: [{ text: `Portrait of ${character.name}, ${character.appearance}` }] }
+      contents: { parts: [{ text: `Anime style portrait of ${character.name}, ${character.appearance}` }] }
     });
     for (const part of response.candidates[0].content.parts) {
       if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
