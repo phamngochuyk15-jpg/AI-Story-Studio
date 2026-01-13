@@ -20,7 +20,6 @@ const CoAuthorChat: React.FC<CoAuthorChatProps> = ({ project, onUpdate }) => {
 
   useEffect(scrollToBottom, [project.chatHistory, isLoading]);
 
-  // Bộ đếm ngược cooldown
   useEffect(() => {
     if (cooldown > 0) {
       const timer = setTimeout(() => setCooldown(cooldown - 1), 1000);
@@ -28,13 +27,18 @@ const CoAuthorChat: React.FC<CoAuthorChatProps> = ({ project, onUpdate }) => {
     }
   }, [cooldown]);
 
+  const clearHistory = () => {
+    if (window.confirm("Xóa lịch sử chat sẽ giúp giảm lượng Token gửi đi và hạn chế lỗi 429. Bạn có muốn xóa không?")) {
+      onUpdate({ ...project, chatHistory: [] });
+    }
+  };
+
   const handleSend = async () => {
     if (!input.trim() || isLoading || cooldown > 0) return;
 
     const userMsg: ChatMessage = { role: 'user', text: input };
     const initialHistory = [...project.chatHistory, userMsg];
     
-    // UI feedback ngay lập tức
     onUpdate({ ...project, chatHistory: initialHistory });
     const currentInput = input;
     setInput('');
@@ -44,10 +48,10 @@ const CoAuthorChat: React.FC<CoAuthorChatProps> = ({ project, onUpdate }) => {
       const result = await generateCoAuthorResponse(project, currentInput);
       
       if (result.text === "429_ERROR") {
-        setCooldown(30); // Khóa 30 giây
+        setCooldown(45); // Tăng thời gian chờ lên 45s để Google "nguôi giận"
         const errorMsg: ChatMessage = { 
           role: 'model', 
-          text: "⚠️ HỆ THỐNG ĐANG QUÁ TẢI (LỖI 429): Google đang tạm thời hạn chế yêu cầu của bạn. Tôi đã tự động kích hoạt chế độ chờ 30 giây để ổn định lại kết nối. Vui lòng không nhấn gửi liên tục!" 
+          text: "⚠️ CẢNH BÁO HẠN MỨC (LỖI 429): Google đã tạm khóa API Key của bạn vì gửi quá nhiều chữ trong thời gian ngắn. \n\nCÁCH KHẮC PHỤC:\n1. Đợi hết 45 giây đếm ngược.\n2. Bấm nút 'XÓA LỊCH SỬ' ở góc trên để giảm lượng dữ liệu gửi đi.\n3. Nếu vẫn lỗi, hãy tạo một API Key mới tại Google AI Studio và cập nhật vào biến môi trường Vercel." 
         };
         onUpdate({ 
           ...project, 
@@ -56,8 +60,7 @@ const CoAuthorChat: React.FC<CoAuthorChatProps> = ({ project, onUpdate }) => {
       } else {
         const modelMsg: ChatMessage = { 
           role: 'model', 
-          text: result.text,
-          groundingUrls: result.groundingUrls 
+          text: result.text
         };
         onUpdate({ 
           ...project, 
@@ -91,14 +94,28 @@ const CoAuthorChat: React.FC<CoAuthorChatProps> = ({ project, onUpdate }) => {
 
   return (
     <div className="flex flex-col h-full bg-slate-50 overflow-hidden">
+      {/* Header bổ sung nút dọn dẹp */}
+      <div className="bg-white px-8 py-3 border-b border-slate-200 flex justify-between items-center shrink-0">
+        <div className="flex items-center gap-2">
+           <div className="w-2 h-2 rounded-full bg-green-500"></div>
+           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Model: Flash Lite (Quotas Optimized)</span>
+        </div>
+        <button 
+          onClick={clearHistory}
+          className="text-[10px] font-black text-red-500 hover:text-red-700 uppercase tracking-widest px-3 py-1.5 rounded-lg hover:bg-red-50 transition-all border border-transparent hover:border-red-100"
+        >
+          Dọn dẹp lịch sử (Giảm 429)
+        </button>
+      </div>
+
       <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
         <div className="max-w-4xl mx-auto space-y-8">
           {project.chatHistory.length === 0 && (
             <div className="text-center py-16 bg-white rounded-3xl border border-slate-200 shadow-sm p-10">
               <div className="text-5xl mb-6">🖋️</div>
-              <h4 className="text-xl font-bold text-slate-800 mb-2">Hãy kể cho tôi nghe về thế giới của bạn</h4>
+              <h4 className="text-xl font-bold text-slate-800 mb-2">Đồng tác giả đã sẵn sàng</h4>
               <p className="text-slate-500 max-w-sm mx-auto mb-8 leading-relaxed text-sm">
-                Tôi là đồng tác giả "Lite". Chế độ này đã được tối ưu để hoạt động ổn định nhất với hạn mức miễn phí.
+                Tôi đã được tối ưu để tiêu tốn ít tài nguyên nhất. Hãy bắt đầu câu chuyện của bạn.
               </p>
             </div>
           )}
@@ -109,7 +126,7 @@ const CoAuthorChat: React.FC<CoAuthorChatProps> = ({ project, onUpdate }) => {
                 msg.role === 'user' 
                 ? 'bg-indigo-600 text-white px-6 py-4 rounded-2xl rounded-tr-none shadow-md' 
                 : msg.text.includes("429") 
-                  ? 'bg-amber-50 text-amber-800 px-8 py-7 rounded-3xl rounded-tl-none border border-amber-200 shadow-sm'
+                  ? 'bg-red-50 text-red-800 px-8 py-7 rounded-3xl rounded-tl-none border border-red-200 shadow-sm'
                   : 'bg-white text-slate-800 px-8 py-7 rounded-3xl rounded-tl-none border border-slate-200 shadow-sm'
               }`}>
                 <div className={`text-[10px] font-bold mb-3 uppercase tracking-widest flex justify-between items-center ${
@@ -156,9 +173,9 @@ const CoAuthorChat: React.FC<CoAuthorChatProps> = ({ project, onUpdate }) => {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-            placeholder={cooldown > 0 ? `Vui lòng đợi ${cooldown}s để hồi phục hạn mức...` : "Nhập tin nhắn..."}
+            placeholder={cooldown > 0 ? `Google đang chặn API Key... Thử lại sau ${cooldown}s` : "Nhập ý tưởng (nên ngắn gọn để tránh lỗi)..."}
             className={`flex-1 px-6 py-4 border rounded-2xl outline-none resize-none transition-all text-[15px] ${
-              cooldown > 0 ? 'bg-slate-100 border-slate-200 text-slate-400' : 'bg-slate-50 border-slate-200 focus:ring-2 focus:ring-indigo-500'
+              cooldown > 0 ? 'bg-red-50 border-red-100 text-red-400' : 'bg-slate-50 border-slate-200 focus:ring-2 focus:ring-indigo-500'
             }`}
             rows={1}
           />
@@ -172,7 +189,7 @@ const CoAuthorChat: React.FC<CoAuthorChatProps> = ({ project, onUpdate }) => {
             }`}
           >
             {cooldown > 0 ? (
-              <span className="text-xs font-black">{cooldown}</span>
+              <span className="text-xs font-black text-red-500">{cooldown}</span>
             ) : (
               <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 5l7 7-7 7M5 5l7 7-7 7" /></svg>
             )}

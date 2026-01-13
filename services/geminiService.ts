@@ -11,46 +11,43 @@ const getApiKey = () => {
 };
 
 const handleAiError = (error: any) => {
-  console.error("AI Error:", error);
+  console.error("AI Error Details:", error);
   const msg = error.message || "";
-  if (msg.includes("429") || msg.includes("60s") || msg.includes("quota") || msg.includes("exhausted")) {
+  // Google trả về 429 khi quá tải hoặc hết hạn mức TPM (Tokens Per Minute)
+  if (msg.includes("429") || msg.includes("quota") || msg.includes("exhausted") || msg.includes("60s")) {
     return "429_ERROR";
   }
   return `⚠️ LỖI: ${msg}`;
 };
 
-// Cực kỳ ngắn gọn để tiết kiệm token đầu vào
-const getMinContext = (project: Project) => {
-  return `Truyện: ${project.title}. Thể loại: ${project.genre}.`;
-};
-
-export const generateCoAuthorResponse = async (project: Project, userMessage: string): Promise<{ text: string; groundingUrls?: { title: string; uri: string }[] }> => {
+export const generateCoAuthorResponse = async (project: Project, userMessage: string): Promise<{ text: string }> => {
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    // Dùng model 2.0 Lite mới nhất để có quota tốt nhất
-    const model = "gemini-2.0-flash-lite-preview-02-05";
+    // Dùng bản Lite ổn định nhất (Stable Alias)
+    const model = "gemini-flash-lite-latest";
     
-    // Chỉ lấy 2 tin nhắn gần nhất để siêu tiết kiệm
-    const shortHistory = project.chatHistory.slice(-2).map(m => ({
-      role: m.role,
-      parts: [{ text: m.text }]
-    }));
+    // Tối ưu: Chỉ gửi 1 tin nhắn cũ nhất và 1 tin nhắn mới nhất để giảm Token
+    const ultraShortHistory = project.chatHistory.length > 0 
+      ? [project.chatHistory[project.chatHistory.length - 1]].map(m => ({
+          role: m.role,
+          parts: [{ text: m.text.slice(0, 500) }] // Cắt ngắn tin nhắn cũ
+        }))
+      : [];
 
     const response = await ai.models.generateContent({
       model,
-      contents: [...shortHistory, { role: 'user', parts: [{ text: userMessage }] }],
+      contents: [...ultraShortHistory, { role: 'user', parts: [{ text: userMessage }] }],
       config: { 
-        systemInstruction: `Bạn là đồng tác giả. Trả lời ngắn gọn bằng tiếng Việt. ${getMinContext(project)}`,
-        maxOutputTokens: 400, // Giới hạn độ dài phản hồi để tiết kiệm TPM
-        temperature: 0.7
+        systemInstruction: `Bạn là đồng tác giả. Trả lời cực ngắn, súc tích bằng tiếng Việt. Bối cảnh: ${project.title}`,
+        maxOutputTokens: 250, // Ép đầu ra siêu ngắn để Google không chặn
+        temperature: 0.8,
+        topP: 0.8,
+        topK: 40
       }
     });
 
-    return { 
-      text: response.text || "AI không phản hồi.",
-    };
+    return { text: response.text || "AI không phản hồi." };
   } catch (error: any) {
-    if (error.message === "API_KEY_MISSING") return { text: "⚠️ LỖI: Chưa cấu hình API_KEY trên Vercel." };
     return { text: handleAiError(error) };
   }
 };
@@ -59,17 +56,17 @@ export const generateStoryDraft = async (project: Project, chapter: Chapter, ins
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-lite-preview-02-05",
-      contents: `Viết tiếp chương "${chapter.title}". Yêu cầu: ${instruction}\n\nĐoạn cuối: ${chapter.content.slice(-500)}`,
+      model: "gemini-flash-lite-latest",
+      contents: `Viết tiếp chương "${chapter.title}". Yêu cầu: ${instruction}\n\nĐoạn cuối: ${chapter.content.slice(-400)}`,
       config: { 
-        systemInstruction: `Viết truyện tiếng Việt. ${getMinContext(project)}`,
-        maxOutputTokens: 800 // Giới hạn vừa phải cho viết chương
+        systemInstruction: `Viết truyện. ${project.title}`,
+        maxOutputTokens: 500
       }
     });
     return response.text;
   } catch (error: any) {
     const errCode = handleAiError(error);
-    return errCode === "429_ERROR" ? "⚠️ LỖI 429: Hết hạn mức, hãy đợi 30s." : errCode;
+    return errCode === "429_ERROR" ? "⚠️ LỖI 429: Google đang chặn do bạn gửi quá nhiều chữ. Hãy đợi 30s hoặc xóa lịch sử chat." : errCode;
   }
 };
 
@@ -77,8 +74,8 @@ export const analyzeRelationships = async (project: Project): Promise<Relationsh
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-lite-preview-02-05",
-      contents: `Trả về JSON quan hệ nhân vật: ${project.characters.map(c => c.name).join(", ")}`,
+      model: "gemini-flash-lite-latest",
+      contents: `JSON nhân vật: ${project.characters.map(c => c.name).join(", ")}`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -93,14 +90,11 @@ export const analyzeRelationships = async (project: Project): Promise<Relationsh
             },
             required: ["fromId", "toId", "type"]
           }
-        },
-        maxOutputTokens: 500
+        }
       }
     });
     return JSON.parse(response.text || "[]");
-  } catch (error) {
-    return [];
-  }
+  } catch (error) { return []; }
 };
 
 export const generateCharacterPortrait = async (character: Character) => {
@@ -108,15 +102,13 @@ export const generateCharacterPortrait = async (character: Character) => {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
-      contents: { parts: [{ text: `Anime style: ${character.appearance}` }] }
+      contents: { parts: [{ text: `Anime style, ${character.appearance}` }] }
     });
     for (const part of response.candidates[0].content.parts) {
       if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
     }
     return null;
-  } catch (error) {
-    return null;
-  }
+  } catch (error) { return null; }
 };
 
 export const generateSpeech = async (text: string) => {
@@ -124,14 +116,12 @@ export const generateSpeech = async (text: string) => {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text: text.slice(0, 300) }] }],
+      contents: [{ parts: [{ text: text.slice(0, 200) }] }],
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
       },
     });
     return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-  } catch (error) {
-    return null;
-  }
+  } catch (error) { return null; }
 };
