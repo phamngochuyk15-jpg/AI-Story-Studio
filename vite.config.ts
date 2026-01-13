@@ -4,9 +4,10 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
-  // Đảm bảo process.env.API_KEY có sẵn trong code client-side
+  // Define này sẽ thay thế các biến trong code lúc build
+  // Chúng ta sẽ lấy cả 2 trường hợp tên biến để tránh lỗi typo của người dùng
   define: {
-    'process.env.API_KEY': JSON.stringify(process.env.API_KEY || '')
+    'process.env.API_KEY': JSON.stringify(process.env.API_KEY || process.env.API_Key || '')
   },
   server: {
     port: 3000

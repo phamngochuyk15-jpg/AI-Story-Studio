@@ -2,18 +2,28 @@
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { Project, Chapter, Character, Relationship } from "../types";
 
-/**
- * Hàm lấy API Key từ môi trường.
- * Vite sẽ thay thế process.env.API_KEY bằng giá trị thực tế lúc Build.
- */
 const getApiKey = () => {
   const key = process.env.API_KEY;
-  
-  // Kiểm tra nếu key bị rỗng hoặc là chuỗi "undefined" do lỗi build
   if (!key || key === "" || key === "undefined") {
-    throw new Error("CHƯA CẤU HÌNH API KEY: Vui lòng vào cài đặt Project trên nền tảng Deploy (Vercel/Netlify), thêm biến môi trường tên là API_KEY với giá trị là mã của bạn, sau đó 'Redeploy' lại.");
+    throw new Error("CHƯA CẤU HÌNH API KEY: Vui lòng kiểm tra biến môi trường API_KEY trong cài đặt Vercel.");
   }
   return key;
+};
+
+/**
+ * Xử lý lỗi từ Google API để hiển thị thông báo thân thiện
+ */
+const handleAiError = (error: any) => {
+  console.error("AI Error Details:", error);
+  const msg = error.message || "";
+  
+  if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED")) {
+    return "⚠️ HẾT HẠN MỨC SỬ DỤNG: Bạn đã gửi quá nhiều yêu cầu hoặc hết giới hạn miễn phí của Google trong hôm nay. Hãy đợi 1-2 phút rồi thử lại hoặc nâng cấp lên gói trả phí tại Google AI Studio.";
+  }
+  if (msg.includes("500") || msg.includes("Internal Server Error")) {
+    return "⚠️ LỖI HỆ THỐNG GOOGLE: Máy chủ AI đang gặp sự cố tạm thời. Vui lòng thử lại sau vài giây.";
+  }
+  return `⚠️ LỖI KẾT NỐI: ${msg}`;
 };
 
 const getSystemContext = (project: Project) => {
@@ -23,23 +33,19 @@ const getSystemContext = (project: Project) => {
     
   return `
     DỰ ÁN: ${project.title}
-    BỐI CẢNH THẾ GIỚI:
-    ${project.worldBible || "Chưa có thiết lập bối cảnh."}
-
+    BỐI CẢNH: ${project.worldBible || "Tự do"}
     ${charContext}
-
-    THỂ LOẠI: ${project.genre}. TONE GIỌNG: ${project.tone}.
+    THỂ LOẠI: ${project.genre}. TONE: ${project.tone}.
   `;
 };
 
 export const generateCoAuthorResponse = async (project: Project, userMessage: string) => {
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    const model = "gemini-3-pro-preview";
+    // Chuyển sang model Flash để có hạn mức sử dụng (RPM/TPM) cao hơn Pro
+    const model = "gemini-3-flash-preview";
     
-    const systemInstruction = `Bạn là một Nhà văn chuyên nghiệp, đồng tác giả của dự án này. 
-    ${getSystemContext(project)}
-    Hãy phản hồi bằng tiếng Việt, hỗ trợ tác giả xây dựng tình tiết hấp dẫn.`;
+    const systemInstruction = `Bạn là đồng tác giả của dự án này. Hãy phản hồi bằng tiếng Việt. ${getSystemContext(project)}`;
 
     const formattedHistory = project.chatHistory.map(m => ({
       role: m.role,
@@ -62,14 +68,11 @@ export const generateCoAuthorResponse = async (project: Project, userMessage: st
     })).filter((item: any) => item.uri);
 
     return { 
-      text: response.text || "Tôi đang suy nghĩ, bạn hãy thử lại nhé.",
+      text: response.text || "AI không trả về nội dung.",
       groundingUrls: urls
     };
   } catch (error: any) {
-    console.error("AI Error:", error);
-    return { 
-      text: `⚠️ ${error.message}` 
-    };
+    return { text: handleAiError(error) };
   }
 };
 
@@ -78,9 +81,7 @@ export const analyzeRelationships = async (project: Project): Promise<Relationsh
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     if (project.characters.length < 2) return [];
 
-    const prompt = `Dựa vào bối cảnh, hãy phân tích mối quan hệ giữa các nhân vật:
-    ${project.characters.map(c => `${c.name} (${c.role}): ${c.personality}`).join(", ")}
-    Trả về kết quả dưới dạng JSON array các object {fromId, toId, type, description}.`;
+    const prompt = `Phân tích quan hệ nhân vật: ${project.characters.map(c => c.name).join(", ")}. Trả về JSON array.`;
 
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
@@ -104,7 +105,6 @@ export const analyzeRelationships = async (project: Project): Promise<Relationsh
     });
     return JSON.parse(response.text || "[]");
   } catch (error) {
-    console.error("Analyze error:", error);
     return [];
   }
 };
@@ -112,34 +112,29 @@ export const analyzeRelationships = async (project: Project): Promise<Relationsh
 export const generateStoryDraft = async (project: Project, chapter: Chapter, instruction: string) => {
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    const systemInstruction = `Bạn là nhà văn chính. ${getSystemContext(project)}`;
-
     const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview",
-      contents: `Nhiệm vụ: ${instruction}\n\nNội dung chương hiện tại:\n${chapter.content}`,
-      config: { systemInstruction }
+      model: "gemini-3-flash-preview",
+      contents: `Viết tiếp chương này: ${chapter.title}. Yêu cầu: ${instruction}\n\nNội dung cũ: ${chapter.content}`,
+      config: { systemInstruction: getSystemContext(project) }
     });
     return response.text;
   } catch (error: any) {
-    console.error("Draft error:", error);
-    return `Lỗi khi viết: ${error.message}`;
+    return handleAiError(error);
   }
 };
 
 export const generateCharacterPortrait = async (character: Character) => {
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    const prompt = `Professional character portrait of ${character.name}, ${character.appearance}. Cinematic lighting, detailed digital art style.`;
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
-      contents: { parts: [{ text: prompt }] }
+      contents: { parts: [{ text: `Portrait of ${character.name}, ${character.appearance}` }] }
     });
     for (const part of response.candidates[0].content.parts) {
       if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
     }
     return null;
   } catch (error) {
-    console.error("Image error:", error);
     return null;
   }
 };
@@ -152,14 +147,11 @@ export const generateSpeech = async (text: string) => {
       contents: [{ parts: [{ text }] }],
       config: {
         responseModalities: [Modality.AUDIO],
-        speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
-        },
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
       },
     });
     return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
   } catch (error) {
-    console.error("TTS error:", error);
     return null;
   }
 };
