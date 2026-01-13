@@ -5,7 +5,7 @@ import { Project, Chapter, Character, Relationship } from "../types";
 const getApiKey = () => {
   const key = process.env.API_KEY;
   if (!key || key === "" || key === "undefined") {
-    throw new Error("CHƯA CẤU HÌNH API KEY: Kiểm tra biến API_KEY trên Vercel.");
+    throw new Error("CHƯA CẤU HÌNH API KEY.");
   }
   return key;
 };
@@ -14,27 +14,30 @@ const handleAiError = (error: any) => {
   console.error("AI Error:", error);
   const msg = error.message || "";
   if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED")) {
-    return "⚠️ HỆ THỐNG ĐANG QUÁ TẢI (429): Bạn đã dùng hết hạn mức miễn phí trong phút này. Hãy nghỉ tay khoảng 30-60 giây rồi nhấn gửi lại nhé!";
+    return "429_ERROR"; // Trả về mã lỗi đặc biệt để UI xử lý
   }
   return `⚠️ LỖI: ${msg}`;
 };
 
 /**
- * Rút gọn bối cảnh để gửi đi (chỉ gửi những thứ quan trọng nhất)
+ * Thu gọn bối cảnh ở mức tối giản (dưới 500 ký tự) để tiết kiệm Token
  */
-const getCondensedContext = (project: Project) => {
-  const charNames = project.characters.map(c => c.name).join(", ");
-  return `Tên truyện: ${project.title}. Thể loại: ${project.genre}. Nhân vật: ${charNames}. Bối cảnh: ${project.worldBible.slice(0, 1000)}...`;
+const getUltraCondensedContext = (project: Project) => {
+  return `Truyện: ${project.title}. Thể loại: ${project.genre}. Bối cảnh: ${project.worldBible.slice(0, 300)}...`;
 };
 
-// Cập nhật hàm trả về đối tượng có groundingUrls để khớp với kiểu dữ liệu ChatMessage trong UI
-export const generateCoAuthorResponse = async (project: Project, userMessage: string) => {
+/**
+ * Trả về phản hồi từ đồng tác giả AI
+ * Fix: Thêm kiểu dữ liệu trả về tường minh bao gồm groundingUrls để sửa lỗi TS trong CoAuthorChat.tsx
+ */
+export const generateCoAuthorResponse = async (project: Project, userMessage: string): Promise<{ text: string; groundingUrls?: { title: string; uri: string }[] }> => {
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    const model = "gemini-3-flash-preview";
+    // Chuyển sang Flash Lite - Model "trâu" nhất về hạn mức Free
+    const model = "gemini-flash-lite-latest";
     
-    // Chỉ lấy 8 tin nhắn gần nhất để tiết kiệm token
-    const shortHistory = project.chatHistory.slice(-8).map(m => ({
+    // Chỉ lấy 4 tin nhắn gần nhất (siêu tiết kiệm)
+    const shortHistory = project.chatHistory.slice(-4).map(m => ({
       role: m.role,
       parts: [{ text: m.text }]
     }));
@@ -43,20 +46,16 @@ export const generateCoAuthorResponse = async (project: Project, userMessage: st
       model,
       contents: [...shortHistory, { role: 'user', parts: [{ text: userMessage }] }],
       config: { 
-        systemInstruction: `Bạn là đồng tác giả truyện. Hãy trả lời ngắn gọn, súc tích bằng tiếng Việt. Bối cảnh: ${getCondensedContext(project)}`,
-        // Kích hoạt Google Search để có thể cung cấp nguồn tham khảo thực tế
-        tools: [{ googleSearch: {} }]
+        systemInstruction: `Bạn là đồng tác giả. Trả lời cực ngắn gọn bằng tiếng Việt. Bối cảnh: ${getUltraCondensedContext(project)}`,
+        // KHÔNG dùng tools (Google Search) để tránh bị khóa quota nhanh
       }
     });
 
-    // Trích xuất các liên kết từ dữ liệu grounding của Gemini
-    const groundingUrls = response.candidates?.[0]?.groundingMetadata?.groundingChunks
-      ?.filter((chunk: any) => chunk.web)
-      .map((chunk: any) => ({
-        title: chunk.web.title || "Nguồn tham khảo",
-        uri: chunk.web.uri || ""
-      }))
-      .filter((u: any) => u.uri !== "");
+    // Trích xuất grounding URLs nếu có (mặc dù hiện tại tools đang tắt)
+    const groundingUrls = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
+      title: chunk.web?.title || chunk.maps?.title || "Nguồn",
+      uri: chunk.web?.uri || chunk.maps?.uri || ""
+    })).filter((item: any) => item.uri);
 
     return { 
       text: response.text || "AI không phản hồi.",
@@ -71,15 +70,16 @@ export const generateStoryDraft = async (project: Project, chapter: Chapter, ins
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Viết tiếp chương "${chapter.title}". Yêu cầu: ${instruction}\n\nNội dung trước đó: ${chapter.content.slice(-2000)}`,
+      model: "gemini-flash-lite-latest",
+      contents: `Viết tiếp chương "${chapter.title}". Yêu cầu: ${instruction}\n\nĐoạn cuối: ${chapter.content.slice(-800)}`,
       config: { 
-        systemInstruction: getCondensedContext(project)
+        systemInstruction: getUltraCondensedContext(project)
       }
     });
     return response.text;
   } catch (error: any) {
-    return handleAiError(error);
+    const errCode = handleAiError(error);
+    return errCode === "429_ERROR" ? "⚠️ LỖI 429: Hết hạn mức, hãy đợi 30s." : errCode;
   }
 };
 
@@ -87,8 +87,8 @@ export const analyzeRelationships = async (project: Project): Promise<Relationsh
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Phân tích quan hệ giữa: ${project.characters.map(c => c.name).join(", ")} dựa trên bối cảnh: ${project.worldBible}`,
+      model: "gemini-flash-lite-latest",
+      contents: `JSON quan hệ: ${project.characters.map(c => c.name).join(", ")}`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -117,7 +117,7 @@ export const generateCharacterPortrait = async (character: Character) => {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
-      contents: { parts: [{ text: `Anime style portrait of ${character.name}, ${character.appearance}` }] }
+      contents: { parts: [{ text: `Simple anime character, ${character.appearance}` }] }
     });
     for (const part of response.candidates[0].content.parts) {
       if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
@@ -133,7 +133,7 @@ export const generateSpeech = async (text: string) => {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text }] }],
+      contents: [{ parts: [{ text: text.slice(0, 500) }] }],
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
